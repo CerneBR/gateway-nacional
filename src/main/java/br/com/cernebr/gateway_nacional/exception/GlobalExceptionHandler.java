@@ -15,6 +15,10 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.net.URI;
 import java.time.OffsetDateTime;
@@ -263,6 +267,125 @@ public class GlobalExceptionHandler {
         problem.setProperty("provider", "DataSUS/FTP");
 
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+    }
+
+    /**
+     * Parâmetro obrigatório ausente na query string. Sem este handler o
+     * consumidor que esquece {@code ?linha=...} recebe "erro interno, a
+     * equipe técnica foi notificada" — mentindo sobre a origem da falha e
+     * disparando alerta falso na observabilidade.
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ProblemDetail> handleMissingParam(MissingServletRequestParameterException ex,
+                                                            HttpServletRequest request) {
+        log.info("Parâmetro obrigatório ausente em {} {}: {}",
+                request.getMethod(), request.getRequestURI(), ex.getParameterName());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST,
+                "Parâmetro obrigatório ausente: '" + ex.getParameterName()
+                        + "' (tipo " + ex.getParameterType() + ")."
+        );
+        problem.setTitle("Parâmetro obrigatório ausente");
+        problem.setType(TYPE_VALIDATION);
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        problem.setProperty("parameter", ex.getParameterName());
+
+        return ResponseEntity.badRequest().body(problem);
+    }
+
+    /**
+     * Valor no formato errado — tipicamente data fora do padrão ISO
+     * ({@code 20240102} em vez de {@code 2024-01-02}) ou número não
+     * parseável. É erro do cliente, não do gateway.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ProblemDetail> handleTypeMismatch(MethodArgumentTypeMismatchException ex,
+                                                             HttpServletRequest request) {
+        Class<?> required = ex.getRequiredType();
+        String tipo = required != null ? required.getSimpleName() : "desconhecido";
+
+        log.info("Tipo inválido em {} {}: parâmetro '{}' recebeu '{}' (esperado {})",
+                request.getMethod(), request.getRequestURI(), ex.getName(), ex.getValue(), tipo);
+
+        // Datas são de longe o caso mais comum — dá o formato esperado em vez
+        // de só dizer "LocalDate", que não ajuda quem está integrando.
+        String dica = switch (tipo) {
+            case "LocalDate" -> " Use o formato ISO-8601: aaaa-MM-dd (ex.: 2024-01-02).";
+            case "LocalDateTime" -> " Use o formato ISO-8601: aaaa-MM-ddTHH:mm:ss.";
+            case "Integer", "Long", "int", "long" -> " Informe um número inteiro.";
+            case "BigDecimal", "Double", "double" -> " Informe um número decimal com ponto (ex.: 10.50).";
+            default -> "";
+        };
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.BAD_REQUEST,
+                "Valor inválido para '" + ex.getName() + "': '" + ex.getValue()
+                        + "' não é um(a) " + tipo + " válido(a)." + dica
+        );
+        problem.setTitle("Formato de parâmetro inválido");
+        problem.setType(TYPE_VALIDATION);
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+        problem.setProperty("parameter", ex.getName());
+        problem.setProperty("expectedType", tipo);
+
+        return ResponseEntity.badRequest().body(problem);
+    }
+
+    /**
+     * Validação de domínio feita manualmente nos services (paginação fora de
+     * faixa, IBGE ausente, dígito verificador inválido...). Em todo o projeto
+     * {@code IllegalArgumentException} é lançada exclusivamente para entrada
+     * malformada do cliente — nunca para estado interno inconsistente — então
+     * 400 é a tradução correta.
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ProblemDetail> handleIllegalArgument(IllegalArgumentException ex,
+                                                                HttpServletRequest request) {
+        log.info("Argumento inválido em {} {}: {}",
+                request.getMethod(), request.getRequestURI(), ex.getMessage());
+
+        String detail = ex.getMessage();
+        if (detail == null || detail.isBlank()) {
+            detail = "Parâmetro inválido.";
+        }
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail);
+        problem.setTitle("Parâmetro inválido");
+        problem.setType(TYPE_VALIDATION);
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+
+        return ResponseEntity.badRequest().body(problem);
+    }
+
+    /**
+     * Rota inexistente. Sem este handler a exceção cai no catch-all
+     * {@code Exception.class} abaixo e vira 500 — mascarando um simples
+     * erro de digitação do consumidor como falha do gateway, poluindo o
+     * log de erros e contradizendo o contrato 404 publicado no portal.
+     *
+     * <p>Registrado explicitamente porque um {@code @RestControllerAdvice}
+     * com handler para {@code Exception} tem precedência sobre o
+     * tratamento padrão que o Spring daria à {@link NoResourceFoundException}.</p>
+     */
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ProblemDetail> handleNoHandler(Exception ex, HttpServletRequest request) {
+        log.info("Rota não mapeada: {} {}", request.getMethod(), request.getRequestURI());
+
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.NOT_FOUND,
+                "Rota não encontrada: " + request.getMethod() + " " + request.getRequestURI()
+                        + ". Consulte a documentação em https://cernebr.dev.br/docs."
+        );
+        problem.setTitle("Rota não encontrada");
+        problem.setType(TYPE_RESOURCE_NOTFOUND);
+        problem.setInstance(URI.create(request.getRequestURI()));
+        problem.setProperty("timestamp", OffsetDateTime.now());
+
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
     }
 
     @ExceptionHandler(Exception.class)

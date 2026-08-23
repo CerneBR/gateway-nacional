@@ -29,7 +29,11 @@ public class WebMvcConfig implements WebMvcConfigurer {
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(rateLimiterInterceptor)
-                .addPathPatterns("/api/v1/**")
+                // Licitações, Inteligência e Mapeamento são servidos sob /v1/**
+                // (sem o prefixo /api) por herança histórica. Sem este segundo
+                // padrão eles ficariam completamente fora do rate limit — que é
+                // exatamente onde as consultas mais caras do gateway moram.
+                .addPathPatterns("/api/v1/**", "/v1/**")
                 .excludePathPatterns("/api/v1/status");
     }
 }

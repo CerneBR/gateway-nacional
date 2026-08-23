@@ -25,7 +25,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @Validated
 @RestController
-@RequestMapping("/v1/licitacoes")
+// Canônico é /api/v1/** (padrão dos demais 55 controllers); /v1/** fica como
+// alias para não quebrar integrações que já apontam para o caminho antigo.
+@RequestMapping({"/api/v1/licitacoes", "/v1/licitacoes"})
 @Tag(
         name = "Licitações — GovTech",
         description = "Listagem unificada e detalhe de licitações públicas e privadas a partir do PNCP/ComprasNet, BLL, BNC e Licitanet. Saídas normalizadas no contrato canônico LicitacaoResumoDTO / LicitacaoDetalheDTO; engine de resiliência aplica RefreshAheadCache (Soft 30m / Hard 12h) sobre cascata sequencial."

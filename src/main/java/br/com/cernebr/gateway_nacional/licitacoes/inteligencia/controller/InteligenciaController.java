@@ -26,7 +26,8 @@ import java.time.OffsetDateTime;
  * ({@code gateway.licitacoes.inteligencia.enabled=true}).</p>
  */
 @RestController
-@RequestMapping("/v1/inteligencia")
+// Canônico /api/v1/**; /v1/** mantido como alias retrocompatível.
+@RequestMapping({"/api/v1/inteligencia", "/v1/inteligencia"})
 @ConditionalOnProperty(prefix = "gateway.licitacoes.inteligencia", name = "enabled", havingValue = "true")
 @Tag(name = "Inteligência de Licitações", description = "Cruzamento Licitações↔Empresas para prospecção B2B.")
 public class InteligenciaController {

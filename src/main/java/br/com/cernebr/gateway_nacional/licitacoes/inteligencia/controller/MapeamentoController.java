@@ -32,7 +32,9 @@ public class MapeamentoController {
         this.service = service;
     }
 
-    @GetMapping(value = "/v1/licitacoes/{portal}/{identificador}/empresas", produces = MediaType.APPLICATION_JSON_VALUE)
+    @GetMapping(value = {"/api/v1/licitacoes/{portal}/{identificador}/empresas",
+                         "/v1/licitacoes/{portal}/{identificador}/empresas"},
+                produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Empresas participantes de uma licitação",
             description = "Lista as empresas (participantes/vencedoras) de um edital — uma linha por item participado.")
     public List<ParticipanteDTO> empresasDaLicitacao(
@@ -42,7 +44,9 @@ public class MapeamentoController {
         return service.empresasDaLicitacao(portal, identificador);
     }
 
-    @GetMapping(value = "/v1/empresas/{cnpj}/licitacoes", produces = MediaType.APPLICATION_JSON_VALUE)
+    @GetMapping(value = {"/api/v1/empresas/{cnpj}/licitacoes",
+                         "/v1/empresas/{cnpj}/licitacoes"},
+                produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Histórico de participações de uma empresa",
             description = "Lista as licitações em que o CNPJ participou (uma linha por edital, itens agregados).")
     public List<LicitacaoParticipadaDTO> licitacoesDaEmpresa(
