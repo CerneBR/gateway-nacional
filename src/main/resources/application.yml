@@ -394,6 +394,13 @@ gateway:
       # REST pública, sem credencial. Endpoint canônico:
       # /api/consulta/v1/contratacoes/proposta.
       base-url: https://pncp.gov.br
+      # Páginas de 50 registros varridas por coleta. A API só devolve 50 por
+      # chamada e informa totalPaginas; ler uma única página truncava a
+      # federação em silêncio. 5 páginas = até 250 editais por recorte, ao
+      # custo de 5 round-trips por cache miss (o RAC absorve, soft-TTL 30m).
+      # Suba se o recorte for amplo (sem uf) e o truncamento aparecer no log
+      # "PNCP truncado: lidas X/Y páginas".
+      max-paginas: 5
     bll:
       # Bolsa de Licitações e Leilões. Scraping HTML da página pública:
       # 100 itens SSR sem captcha. Com GATEWAY_CAPTCHA_SOLVER_KEY configurado,

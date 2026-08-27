@@ -25,7 +25,7 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -59,10 +59,16 @@ public class ComprasNetClient implements LicitacaoClient {
     private static final ParameterizedTypeReference<List<PncpItem>> ITENS_TYPE =
             new ParameterizedTypeReference<>() {};
 
+    /** Registros por chamada — teto aceito pela API pública do PNCP. */
+    private static final int TAMANHO_PAGINA = 50;
+
     private final RestClient restClient;
+    private final int maxPaginas;
 
     public ComprasNetClient(RestClient.Builder builder,
-                            @Value("${gateway.licitacoes.comprasnet.base-url:https://pncp.gov.br}") String baseUrl) {
+                            @Value("${gateway.licitacoes.comprasnet.base-url:https://pncp.gov.br}") String baseUrl,
+                            @Value("${gateway.licitacoes.comprasnet.max-paginas:5}") int maxPaginas) {
+        this.maxPaginas = Math.max(1, maxPaginas);
         this.restClient = builder.baseUrl(baseUrl)
                 .defaultHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                 .defaultHeader("Accept", "application/json")
@@ -71,7 +77,7 @@ public class ComprasNetClient implements LicitacaoClient {
 
     @Override
     public Portal portal() {
-        return Portal.COMPRASNET;
+        return Portal.PNCP;
     }
 
     @Override
@@ -86,34 +92,64 @@ public class ComprasNetClient implements LicitacaoClient {
         String dataInicial = hoje.format(PNCP_DATE);
         String dataFinal = hoje.plusDays(90).format(PNCP_DATE);
 
+        List<LicitacaoResumoDTO> acumulado = new ArrayList<>();
+        int paginasLidas = 0;
+        int totalPaginas = 1;
+
         try {
-            PncpResultado res = restClient.get()
-                    .uri(uriBuilder -> {
-                        var b = uriBuilder.path("/api/consulta/v1/contratacoes/proposta")
-                                .queryParam("dataFinal", dataFinal)
-                                .queryParam("dataInicial", dataInicial)
-                                .queryParam("pagina", 1)
-                                .queryParam("tamanhoPagina", 50);
-                        if (uf != null && !uf.isBlank()) {
-                            b.queryParam("uf", uf.toUpperCase());
-                        }
-                        return b.build();
-                    })
-                    .retrieve()
-                    .body(RESULTADO_TYPE);
+            // Varredura paginada: a API devolve no máximo TAMANHO_PAGINA por
+            // chamada e informa totalPaginas. Ler só a página 1 (comportamento
+            // anterior) silenciosamente truncava a federação em 50 registros —
+            // e a paginação exposta em /ativas paginava esse truncamento, não o
+            // universo real. O teto maxPaginas existe porque um recorte amplo
+            // (sem uf) pode ter centenas de páginas: preferimos truncar de forma
+            // DECLARADA (log com o total) a estourar a latência do refresh.
+            while (paginasLidas < totalPaginas && paginasLidas < maxPaginas) {
+                final int pagina = paginasLidas + 1;
+                PncpResultado res = restClient.get()
+                        .uri(uriBuilder -> {
+                            var b = uriBuilder.path("/api/consulta/v1/contratacoes/proposta")
+                                    .queryParam("dataFinal", dataFinal)
+                                    .queryParam("dataInicial", dataInicial)
+                                    .queryParam("pagina", pagina)
+                                    .queryParam("tamanhoPagina", TAMANHO_PAGINA);
+                            if (uf != null && !uf.isBlank()) {
+                                b.queryParam("uf", uf.toUpperCase());
+                            }
+                            return b.build();
+                        })
+                        .retrieve()
+                        .body(RESULTADO_TYPE);
 
-            if (res == null || res.data == null) {
-                return Collections.emptyList();
+                if (res == null || res.data == null || res.data.isEmpty()) {
+                    break;
+                }
+                if (res.totalPaginas != null && res.totalPaginas > 0) {
+                    totalPaginas = res.totalPaginas;
+                }
+                res.data.stream()
+                        .map(this::toResumo)
+                        .filter(r -> matchesModalidade(r, modalidade))
+                        .forEach(acumulado::add);
+                paginasLidas++;
             }
-
-            return res.data.stream()
-                    .map(this::toResumo)
-                    .filter(r -> matchesModalidade(r, modalidade))
-                    .toList();
         } catch (HttpClientErrorException ex) {
-            throw new ResourceUnavailableException(PROVIDER_NAME,
-                    "PNCP retornou HTTP " + ex.getStatusCode().value() + " ao listar contratações.", ex);
+            // Erro numa página posterior à primeira não descarta o que já veio:
+            // a federação prefere parcial declarado a zerar o portal mais
+            // confiável dos quatro.
+            if (acumulado.isEmpty()) {
+                throw new ResourceUnavailableException(PROVIDER_NAME,
+                        "PNCP retornou HTTP " + ex.getStatusCode().value() + " ao listar contratações.", ex);
+            }
+            log.warn("PNCP falhou na página {} (HTTP {}) — devolvendo {} registros já coletados.",
+                    paginasLidas + 1, ex.getStatusCode().value(), acumulado.size());
         }
+
+        if (totalPaginas > paginasLidas) {
+            log.info("PNCP truncado: lidas {}/{} páginas (teto gateway.licitacoes.comprasnet.max-paginas={}).",
+                    paginasLidas, totalPaginas, maxPaginas);
+        }
+        return acumulado;
     }
 
     @Override
@@ -204,7 +240,7 @@ public class ComprasNetClient implements LicitacaoClient {
             objeto = objeto.substring(0, 277) + "...";
         }
         return new LicitacaoResumoDTO(
-                Portal.COMPRASNET,
+                Portal.PNCP,
                 identificador,
                 c.numeroCompra != null ? c.numeroCompra : ("Compra " + c.sequencialCompra + "/" + c.anoCompra),
                 objeto,
@@ -233,7 +269,7 @@ public class ComprasNetClient implements LicitacaoClient {
                 .toList();
 
         return new LicitacaoDetalheDTO(
-                Portal.COMPRASNET,
+                Portal.PNCP,
                 c.cnpjOrgao() + "-" + c.anoCompra + "-" + c.sequencialCompra,
                 c.numeroCompra != null ? c.numeroCompra : ("Compra " + c.sequencialCompra + "/" + c.anoCompra),
                 c.objetoCompra,
