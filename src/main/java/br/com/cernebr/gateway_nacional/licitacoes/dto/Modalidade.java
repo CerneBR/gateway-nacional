@@ -1,5 +1,7 @@
 package br.com.cernebr.gateway_nacional.licitacoes.dto;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.Locale;
@@ -35,6 +37,12 @@ public enum Modalidade {
         this.slug = slug;
     }
 
+    /**
+     * Valor emitido no JSON. Sem {@code @JsonValue} o Jackson serializaria o
+     * nome da constante ({@code "PREGAO_ELETRONICO"}), divergindo do slug que
+     * o Swagger documenta e que o filtro {@code ?modalidade=} aceita.
+     */
+    @JsonValue
     @Schema(description = "Slug canônico — usado em ?modalidade=…", example = "pregao_eletronico")
     public String slug() {
         return slug;
@@ -59,6 +67,22 @@ public enum Modalidade {
      * Heurística por prefixo: nunca lança — devolve {@link #DESCONHECIDA}
      * quando não há match.
      */
+    /** Desserialização tolerante — aceita o slug canônico ou o nome da constante. */
+    @JsonCreator
+    static Modalidade fromJson(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        return fromSlug(raw).orElseGet(() -> {
+            for (Modalidade m : values()) {
+                if (m.name().equalsIgnoreCase(raw.trim())) {
+                    return m;
+                }
+            }
+            return DESCONHECIDA;
+        });
+    }
+
     public static Modalidade infer(String raw) {
         if (raw == null) return DESCONHECIDA;
         String n = raw.trim().toLowerCase(Locale.ROOT);

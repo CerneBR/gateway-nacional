@@ -137,6 +137,27 @@ public class IntelSchemaBootstrap {
                 )
                 """);
 
+        // ── MIGRAÇÃO: slug do portal federal 'comprasnet' → 'pncp' ─────────────
+        // A federação passou a expor o portal federal pelo nome real (PNCP;
+        // 'comprasnet' virou alias apenas de ENTRADA). O snapshot analítico foi
+        // ingerido com o slug antigo e o MapeamentoQueryService casa
+        // `l.portal = ?` por IGUALDADE — sem esta migração
+        // /licitacoes/pncp/{id}/empresas devolveria lista vazia em silêncio.
+        //
+        // Roda aqui (e não junto do CREATE de licitacao) porque toca as DUAS
+        // tabelas: em base nova, ingestao_cursor ainda não existiria acima.
+        // Idempotente: no-op em base nova ou já migrada. A mv_prospeccao pega a
+        // mudança no próximo REFRESH do ProspeccaoRefreshService.
+        int licMigradas = jdbc.update("UPDATE licitacao SET portal = 'pncp' WHERE portal = 'comprasnet'");
+        // O guard do NOT EXISTS evita violar a PK caso um cursor 'pncp' já exista.
+        int cursoresMigrados = jdbc.update(
+                "UPDATE ingestao_cursor SET portal = 'pncp' WHERE portal = 'comprasnet'"
+                        + " AND NOT EXISTS (SELECT 1 FROM ingestao_cursor c2 WHERE c2.portal = 'pncp')");
+        if (licMigradas > 0 || cursoresMigrados > 0) {
+            log.info("[LIC-INTEL] Slug de portal migrado comprasnet→pncp: {} licitações, {} cursores.",
+                    licMigradas, cursoresMigrados);
+        }
+
         // ── READ-MODEL: materialized view de prospecção (M3) ───────────────────
         // Achata participacao⨝licitacao⨝empresa para servir as consultas do CRM
         // num único índice, sem joins em runtime. Refresh CONCURRENTLY (exige o

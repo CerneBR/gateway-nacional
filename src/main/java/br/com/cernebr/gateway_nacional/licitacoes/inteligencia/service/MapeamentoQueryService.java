@@ -1,5 +1,6 @@
 package br.com.cernebr.gateway_nacional.licitacoes.inteligencia.service;
 
+import br.com.cernebr.gateway_nacional.licitacoes.dto.Portal;
 import br.com.cernebr.gateway_nacional.licitacoes.inteligencia.dto.LicitacaoParticipadaDTO;
 import br.com.cernebr.gateway_nacional.licitacoes.inteligencia.dto.ParticipanteDTO;
 import br.com.cernebr.gateway_nacional.licitacoes.inteligencia.ingest.Cnpjs;
@@ -29,8 +30,22 @@ public class MapeamentoQueryService {
         this.jdbc = jdbc;
     }
 
-    /** Licitação → empresas participantes (uma linha por item participado). */
+    /**
+     * Licitação → empresas participantes (uma linha por item participado).
+     *
+     * <p>O slug chega cru do path e é casado por IGUALDADE no SQL, então
+     * precisa passar por {@link Portal#fromSlug} antes: sem isso um alias
+     * legado ({@code comprasnet}) ou uma variação de caixa ({@code PNCP})
+     * devolveria lista vazia em vez de erro — falha silenciosa, o pior
+     * resultado possível para quem consome. Portal desconhecido vira lista
+     * vazia explicitamente, sem tocar o banco.</p>
+     */
     public List<ParticipanteDTO> empresasDaLicitacao(String portal, String identificador) {
+        String slug = Portal.fromSlug(portal).map(Portal::slug).orElse(null);
+        if (slug == null) {
+            log.debug("[LIC-INTEL] portal desconhecido em empresasDaLicitacao: {}", portal);
+            return List.of();
+        }
         return jdbc.query("""
                 SELECT e.cnpj, e.razao_social, e.nome_fantasia, e.cnae_principal, e.porte,
                        e.uf, e.municipio_ibge, p.papel, p.item_sequencial,
@@ -40,7 +55,7 @@ public class MapeamentoQueryService {
                 JOIN empresa   e ON e.cnpj = p.empresa_cnpj
                 WHERE l.portal = ? AND l.identificador = ?
                 ORDER BY p.valor_homologado DESC NULLS LAST, e.razao_social
-                """, PARTICIPANTE, portal, identificador);
+                """, PARTICIPANTE, slug, identificador);
     }
 
     /** Empresa → licitações em que participou (uma linha por edital, agregada). */

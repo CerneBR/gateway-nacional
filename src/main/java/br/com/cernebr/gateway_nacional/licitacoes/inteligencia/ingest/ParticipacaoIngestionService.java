@@ -1,6 +1,7 @@
 package br.com.cernebr.gateway_nacional.licitacoes.inteligencia.ingest;
 
 import br.com.cernebr.gateway_nacional.cadastral.cep.service.IbgeEnrichmentService;
+import br.com.cernebr.gateway_nacional.licitacoes.dto.Portal;
 import br.com.cernebr.gateway_nacional.licitacoes.inteligencia.config.IntelProperties;
 import br.com.cernebr.gateway_nacional.licitacoes.inteligencia.model.IntelModels.Licitacao;
 import br.com.cernebr.gateway_nacional.licitacoes.inteligencia.model.IntelModels.Papel;
@@ -136,7 +137,7 @@ public class ParticipacaoIngestionService {
                 : ibge.resolveIbge(c.orgaoUf(), c.municipioNome());
 
         Licitacao lic = new Licitacao(
-                null, "comprasnet", c.identificador(), c.numeroCompra(),
+                null, Portal.PNCP.slug(), c.identificador(), c.numeroCompra(),
                 c.objetoCompra(), c.modalidadeNome(), setor.fromObjeto(c.objetoCompra()),
                 c.cnpjOrgao(), c.orgaoNome(), c.orgaoUf(), c.municipioNome(), municipioIbge,
                 c.valorTotalEstimado(), c.valorTotalHomologado(),
