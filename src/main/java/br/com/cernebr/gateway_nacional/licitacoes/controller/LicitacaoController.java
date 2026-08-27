@@ -1,6 +1,7 @@
 package br.com.cernebr.gateway_nacional.licitacoes.controller;
 
 import br.com.cernebr.gateway_nacional.exception.ResourceNotFoundException;
+import br.com.cernebr.gateway_nacional.licitacoes.dto.FiltroAtivas;
 import br.com.cernebr.gateway_nacional.licitacoes.dto.LicitacaoDetalheDTO;
 import br.com.cernebr.gateway_nacional.licitacoes.dto.LicitacoesAtivasPage;
 import br.com.cernebr.gateway_nacional.licitacoes.dto.Portal;
@@ -12,7 +13,11 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -23,6 +28,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.math.BigDecimal;
+import java.time.OffsetDateTime;
+
 @Validated
 @RestController
 // Canônico é /api/v1/** (padrão dos demais 55 controllers); /v1/** fica como
@@ -30,12 +38,15 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping({"/api/v1/licitacoes", "/v1/licitacoes"})
 @Tag(
         name = "Licitações — GovTech",
-        description = "Listagem unificada e detalhe de licitações públicas e privadas a partir do PNCP/ComprasNet, BLL, BNC e Licitanet. Saídas normalizadas no contrato canônico LicitacaoResumoDTO / LicitacaoDetalheDTO; engine de resiliência aplica RefreshAheadCache (Soft 30m / Hard 12h) sobre cascata sequencial."
+        description = "Listagem unificada e detalhe de licitações públicas e privadas a partir do PNCP (inclui ComprasNet federal), BLL, BNC e Licitanet. Saídas normalizadas no contrato canônico LicitacaoResumoDTO / LicitacaoDetalheDTO; engine de resiliência aplica RefreshAheadCache (Soft 30m / Hard 12h) sobre cascata sequencial."
 )
 public class LicitacaoController {
 
     private static final String UF_REGEX = "^[A-Za-z]{2}$";
-    private static final String PORTAL_REGEX = "^(comprasnet|bll|bnc|licitanet)$";
+    // 'comprasnet' segue aceito como alias legado de 'pncp' (ver Portal.ALIASES).
+    private static final String PORTAL_REGEX = "^(pncp|comprasnet|bll|bnc|licitanet)$";
+    private static final String SORT_REGEX = "^(abertura|encerramento|valor|orgao)$";
+    private static final String ORDER_REGEX = "^(asc|desc)$";
     private static final String MODALIDADE_REGEX = "^(pregao_eletronico|pregao_presencial|concorrencia|dispensa|inexigibilidade|leilao|concurso|dialogo_competitivo)$";
 
     private final LicitacoesService licitacoesService;
@@ -49,7 +60,7 @@ public class LicitacaoController {
             summary = "Listar licitações ativas dos 4 portais agregados",
             description = """
                     Agrega o estado corrente de licitações **publicadas/em \
-                    propostas** do PNCP/ComprasNet, Licitanet, BNC e BLL em \
+                    propostas** do PNCP, Licitanet, BNC e BLL em \
                     um único contrato canônico. Filtros são opcionais e \
                     cumulativos.
 
@@ -76,12 +87,12 @@ public class LicitacaoController {
     @ApiResponses({
             @ApiResponse(
                     responseCode = "200",
-                    description = "Listagem agregada (pode incluir portaisFalhos não-vazio em caso de degradação parcial)",
+                    description = "Página da listagem agregada (pode incluir portaisFalhos não-vazio em caso de degradação parcial)",
                     content = @Content(schema = @Schema(implementation = LicitacoesAtivasPage.class))
             ),
             @ApiResponse(
                     responseCode = "400",
-                    description = "Filtro inválido (uf não-2-letras, portal desconhecido, modalidade fora do enum)",
+                    description = "Filtro inválido (uf não-2-letras, portal desconhecido, modalidade fora do enum, page/size fora da faixa)",
                     content = @Content(schema = @Schema(implementation = ProblemDetail.class))
             ),
             @ApiResponse(
@@ -91,12 +102,12 @@ public class LicitacaoController {
             )
     })
     public ResponseEntity<LicitacoesAtivasPage> listarAtivas(
-            @Parameter(description = "Restringe a um único portal (slug). Default: agrega todos.",
-                    example = "comprasnet",
-                    schema = @Schema(allowableValues = {"comprasnet", "bll", "bnc", "licitanet"}))
+            @Parameter(description = "Restringe a um único portal (slug). Default: agrega todos. 'comprasnet' é alias legado de 'pncp'.",
+                    example = "pncp",
+                    schema = @Schema(allowableValues = {"pncp", "bll", "bnc", "licitanet"}))
             @RequestParam(value = "portal", required = false)
             @Pattern(regexp = PORTAL_REGEX,
-                    message = "portal deve ser um de: comprasnet, bll, bnc, licitanet.")
+                    message = "portal deve ser um de: pncp, bll, bnc, licitanet (comprasnet aceito como alias legado).")
             String portal,
 
             @Parameter(description = "UF do órgão promotor (sigla 2 letras).", example = "SP")
@@ -115,9 +126,73 @@ public class LicitacaoController {
             @Pattern(regexp = MODALIDADE_REGEX,
                     flags = Pattern.Flag.CASE_INSENSITIVE,
                     message = "modalidade fora do vocabulário canônico — consulte o enum Modalidade.")
-            String modalidade
+            String modalidade,
+
+            @Parameter(description = "Busca por palavra-chave em objeto, número, órgão, município e identificador. "
+                    + "Case- e acento-insensitive; todos os tokens precisam casar (AND).",
+                    example = "notebook educacao")
+            @RequestParam(value = "q", required = false)
+            @Size(max = 120, message = "q deve ter no máximo 120 caracteres.")
+            String q,
+
+            @Parameter(description = "Índice da página (0-based).", example = "0")
+            @RequestParam(value = "page", defaultValue = "0")
+            @Min(value = 0, message = "page deve ser >= 0.")
+            int pageIndex,
+
+            @Parameter(description = "Itens por página (1..200).", example = "20")
+            @RequestParam(value = "size", defaultValue = "20")
+            @Min(value = 1, message = "size deve ser >= 1.")
+            @Max(value = 200, message = "size deve ser <= 200.")
+            int size,
+
+            @Parameter(description = "Abertura da sessão a partir de (ISO-8601 UTC).",
+                    example = "2026-06-01T00:00:00Z")
+            @RequestParam(value = "aberturaDe", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime aberturaDe,
+
+            @Parameter(description = "Abertura da sessão até (ISO-8601 UTC).",
+                    example = "2026-06-30T23:59:59Z")
+            @RequestParam(value = "aberturaAte", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime aberturaAte,
+
+            @Parameter(description = "Valor estimado mínimo em BRL. Exclui licitações sem valor publicado.",
+                    example = "50000")
+            @RequestParam(value = "valorMin", required = false) BigDecimal valorMin,
+
+            @Parameter(description = "Valor estimado máximo em BRL. Exclui licitações sem valor publicado.",
+                    example = "500000")
+            @RequestParam(value = "valorMax", required = false) BigDecimal valorMax,
+
+            @Parameter(description = "Nome do órgão promotor (match parcial, acento-insensitive).",
+                    example = "secretaria de educacao")
+            @RequestParam(value = "orgao", required = false)
+            @Size(max = 120, message = "orgao deve ter no máximo 120 caracteres.")
+            String orgao,
+
+            @Parameter(description = "Município sede do órgão (match parcial, acento-insensitive).",
+                    example = "aracaju")
+            @RequestParam(value = "municipio", required = false)
+            @Size(max = 120, message = "municipio deve ter no máximo 120 caracteres.")
+            String municipio,
+
+            @Parameter(description = "Campo de ordenação.", example = "abertura",
+                    schema = @Schema(allowableValues = {"abertura", "encerramento", "valor", "orgao"}))
+            @RequestParam(value = "sort", defaultValue = "abertura")
+            @Pattern(regexp = SORT_REGEX,
+                    message = "sort deve ser um de: abertura, encerramento, valor, orgao.")
+            String sort,
+
+            @Parameter(description = "Direção da ordenação. Ausentes (null) ficam sempre ao fim.",
+                    example = "asc",
+                    schema = @Schema(allowableValues = {"asc", "desc"}))
+            @RequestParam(value = "order", defaultValue = "asc")
+            @Pattern(regexp = ORDER_REGEX, message = "order deve ser asc ou desc.")
+            String order
     ) {
-        LicitacoesAtivasPage page = licitacoesService.listarAtivas(portal, uf, modalidade);
+        FiltroAtivas filtro = new FiltroAtivas(q, aberturaDe, aberturaAte, valorMin, valorMax,
+                orgao, municipio, sort, order, pageIndex, size);
+        LicitacoesAtivasPage page = licitacoesService.listarAtivas(portal, uf, modalidade, filtro);
         // X-Cascade / X-Portais-Respondidos: a docs page do frontend usa
         // esses headers para acender o badge de degradação no topo da UI
         // sem precisar parsear o body. Mantemos o JSON intacto (campos
@@ -130,6 +205,8 @@ public class LicitacaoController {
                 .header("X-Cascade", cascade)
                 .header("X-Portais-Respondidos", respondidos)
                 .header("X-Portais-Falhos", falhos)
+                .header("X-Total-Count", String.valueOf(page.total()))
+                .header("X-Total-Pages", String.valueOf(page.totalPaginas()))
                 .body(page);
     }
 
@@ -147,7 +224,7 @@ public class LicitacaoController {
                     então o soft-TTL é mais largo.
 
                     **Identificadores aceitos por portal:**
-                    - `comprasnet` — formato canônico `{cnpjOrgao}-{ano}-{sequencial}` \
+                    - `pncp` (alias legado: `comprasnet`) — formato canônico `{cnpjOrgao}-{ano}-{sequencial}` \
                       (ex.: `00394460000141-2026-1230`). Veja `urlOriginal` na \
                       listagem para o slug exato.
                     - `bll`, `bnc`, `licitanet` — slug interno do portal, \
@@ -176,11 +253,11 @@ public class LicitacaoController {
             )
     })
     public LicitacaoDetalheDTO detalhe(
-            @Parameter(description = "Slug do portal de origem", example = "comprasnet", required = true,
-                    schema = @Schema(allowableValues = {"comprasnet", "bll", "bnc", "licitanet"}))
+            @Parameter(description = "Slug do portal de origem", example = "pncp", required = true,
+                    schema = @Schema(allowableValues = {"pncp", "bll", "bnc", "licitanet"}))
             @PathVariable("portal")
             @Pattern(regexp = PORTAL_REGEX,
-                    message = "portal deve ser um de: comprasnet, bll, bnc, licitanet.")
+                    message = "portal deve ser um de: pncp, bll, bnc, licitanet (comprasnet aceito como alias legado).")
             String portal,
 
             @Parameter(description = "Identificador interno do portal (ver campo identificador na listagem).",
